@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plateify Annealing Debug UI</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+      body { margin: 0; background: #0f172a; color: #e2e8f0; }
+      .app { display: grid; grid-template-columns: 360px 1fr; min-height: 100vh; }
+      .panel { padding: 16px; border-right: 1px solid #334155; overflow: auto; }
+      .main { padding: 16px; display: grid; gap: 12px; grid-template-rows: auto auto 1fr auto; }
+      h1, h2, h3 { margin: 0 0 8px; }
+      .section { margin-bottom: 16px; padding: 12px; border: 1px solid #334155; border-radius: 8px; background: #111827; }
+      .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 6px; }
+      .row input[type="range"] { width: 100%; }
+      input, button, select { background: #1e293b; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 4px 8px; }
+      button { cursor: pointer; }
+      button:hover { background: #334155; }
+      .buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; }
+      .card { background: #0b1220; border: 1px solid #334155; border-radius: 8px; padding: 8px; }
+      canvas { width: 100%; height: 240px; background: #020617; border: 1px solid #334155; border-radius: 8px; }
+      #layoutBars { display: flex; gap: 4px; align-items: flex-end; min-height: 180px; padding: 8px; border: 1px solid #334155; border-radius: 8px; background: #020617; overflow-x: auto; }
+      .bar { min-width: 22px; display: flex; flex-direction: column; align-items: center; font-size: 10px; }
+      .bar > div { width: 100%; background: linear-gradient(180deg, #0ea5e9, #1d4ed8); border: 1px solid #60a5fa; border-radius: 4px 4px 0 0; }
+      .log { max-height: 220px; overflow: auto; border: 1px solid #334155; border-radius: 8px; background: #020617; padding: 8px; }
+      .log-line { margin-bottom: 4px; }
+      .ok { color: #22c55e; }
+      .bad { color: #ef4444; }
+      .meta { color: #94a3b8; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="panel">
+        <h1>Annealing Debugger</h1>
+        <p class="meta">Default fixture: Bayesian plate graph from the spec (c,p,t).</p>
+
+        <div class="section">
+          <h2>Annealing</h2>
+          <div class="row"><label>Seed</label><input id="seed" type="number" value="1337" /><span></span></div>
+          <div class="row"><label>Initial Temp</label><input id="initialTemperature" type="number" step="0.1" value="12" /><span></span></div>
+          <div class="row"><label>Cooling Rate</label><input id="coolingRate" type="number" step="0.0001" value="0.992" /><span></span></div>
+          <div class="row"><label>Min Temp</label><input id="minTemperature" type="number" step="0.0001" value="0.0001" /><span></span></div>
+          <div class="row"><label>Max Nudge Step</label><input id="maxNudgeStep" type="number" step="1" value="2" /><span></span></div>
+          <div class="row"><label>Run steps</label><input id="runCount" type="number" step="1" value="25" /><span></span></div>
+          <div class="buttons">
+            <button id="init">Initialize</button>
+            <button id="step">Step</button>
+            <button id="run">Run N</button>
+            <button id="resetWeights">Reset Weights</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2>Cost Weights</h2>
+          <div id="weights"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="stat-grid" id="stats"></div>
+        <canvas id="costChart" width="960" height="260"></canvas>
+        <div id="layoutBars"></div>
+        <div class="log" id="log"></div>
+      </main>
+    </div>
+
+    <script type="module">
+      const defaultWeights = {
+        L: 1, X: 2, B: 0.8, F_out: 0.4, F_down: 0.4, F: 0.3, S_span: 0.6, S_waste: 0.3, S: 0.4
+      };
+
+      const defaultFixture = {
+        cardinalities: { c: 2, p: 2, t: 3 },
+        nodeSizeByType: { source: 1, latent: 2, deterministic: 2, observed: 3, query: 2, auxiliary: 1 },
+        nodes: [
+          { id: 'alpha', type: 'source', dims: [] }, { id: 'beta', type: 'source', dims: [] },
+          { id: 'gamma', type: 'source', dims: [] }, { id: 'delta', type: 'source', dims: [] },
+          { id: 'r_c', type: 'latent', dims: ['c'] }, { id: 'r_p', type: 'latent', dims: ['p'] }, { id: 'r_cp', type: 'latent', dims: ['c','p'] },
+          { id: 'l_c', type: 'latent', dims: ['c'] }, { id: 'l_p', type: 'latent', dims: ['p'] }, { id: 'l_cp', type: 'latent', dims: ['c','p'] },
+          { id: 's_cpt', type: 'deterministic', dims: ['c','p','t'] }, { id: 'B_cpt', type: 'observed', dims: ['c','p','t'] },
+          { id: 'V_ct', type: 'query', dims: ['c','t'] }, { id: 'T_c', type: 'auxiliary', dims: ['c'] }, { id: 'q_cpt', type: 'query', dims: ['c','p','t'] },
+          { id: 'K_cp', type: 'auxiliary', dims: ['c','p'] }, { id: 'A_cp', type: 'deterministic', dims: ['c','p'] }
+        ]
+      };
+
+      function createDefaultFixtureLayout() {
+        return defaultFixture.nodes.map((node, index) => {
+          const base = defaultFixture.nodeSizeByType[node.type] ?? 1;
+          const cardinality = node.dims.reduce((acc, d) => acc * (defaultFixture.cardinalities[d] ?? 1), 1);
+          return base * cardinality + (index % 3);
+        });
+      }
+
+      function sanitizeSeed(seed) {
+        const n = seed | 0;
+        return n === 0 ? 0x6d2b79f5 : n;
+      }
+
+      function nextRng(state) {
+        let x = state.seed | 0;
+        x ^= x << 13;
+        x ^= x >>> 17;
+        x ^= x << 5;
+        const nextState = { seed: sanitizeSeed(x) };
+        return [(nextState.seed >>> 0) / 4294967296, nextState];
+      }
+
+      function randInt(maxExclusive, rngState) {
+        if (maxExclusive <= 0) return [0, rngState];
+        const [u, next] = nextRng(rngState);
+        return [Math.floor(u * maxExclusive), next];
+      }
+
+      function countInversions(values) {
+        let inv = 0;
+        for (let i = 0; i < values.length; i += 1) {
+          for (let j = i + 1; j < values.length; j += 1) {
+            if (values[i] > values[j]) inv += 1;
+          }
+        }
+        return inv;
+      }
+
+      function computeCost(layout, weights) {
+        const spans = layout.slice(1).map((v, i) => v - layout[i]);
+        const bends = spans.reduce((sum, span) => sum + (Math.abs(span) > 1 ? 1 : 0), 0);
+        const flowDownViolations = spans.reduce((sum, span) => sum + (span < 0 ? 1 : 0), 0);
+        const flowOutViolations = layout.reduce((sum, value) => sum + (value < 0 ? 1 : 0), 0);
+        const crossings = countInversions(layout);
+        const waste = layout.reduce((sum, value) => sum + Math.max(0, Math.abs(value) - 6), 0);
+
+        const base = {
+          L: layout.reduce((sum, p) => sum + Math.abs(p), 0),
+          X: crossings,
+          B: bends,
+          F_out: flowOutViolations,
+          F_down: flowDownViolations,
+          F: flowOutViolations + flowDownViolations,
+          S_span: spans.reduce((sum, s) => sum + Math.abs(s), 0),
+          S_waste: waste,
+          S: spans.reduce((sum, s) => sum + Math.abs(s), 0) + waste,
+        };
+
+        const weighted = Object.fromEntries(Object.entries(base).map(([k,v]) => [k, v * (weights[k] ?? 1)]));
+        const total = Object.values(weighted).reduce((a,b) => a + b, 0);
+        return { total, ...weighted };
+      }
+
+      function proposeMove(state) {
+        let rng = { ...state.rngState };
+        const options = ["nudge", "swap", "reinsert", "blockShift"];
+        let moveIndex; [moveIndex, rng] = randInt(options.length, rng);
+        const type = options[moveIndex];
+
+        if (type === "swap") {
+          let a; [a, rng] = randInt(state.layout.length, rng);
+          let b; [b, rng] = randInt(state.layout.length, rng);
+          while (state.layout.length > 1 && b === a) [b, rng] = randInt(state.layout.length, rng);
+          return { type, a, b, rngStateAfterProposal: rng };
+        }
+
+        if (type === "reinsert") {
+          let from; [from, rng] = randInt(state.layout.length, rng);
+          let to; [to, rng] = randInt(state.layout.length, rng);
+          return { type, from, to, rngStateAfterProposal: rng };
+        }
+
+        if (type === "blockShift") {
+          let start; [start, rng] = randInt(state.layout.length, rng);
+          let end; [end, rng] = randInt(state.layout.length, rng);
+          if (start > end) [start, end] = [end, start];
+          let shift; [shift, rng] = randInt(3, rng);
+          return { type, start, end, shift: shift - 1, rngStateAfterProposal: rng };
+        }
+
+        let index; [index, rng] = randInt(state.layout.length, rng);
+        let deltaMagnitude; [deltaMagnitude, rng] = randInt(Math.max(1, state.maxNudgeStep), rng);
+        let signRoll; [signRoll, rng] = randInt(2, rng);
+        return { type, index, delta: (deltaMagnitude + 1) * (signRoll === 0 ? -1 : 1), rngStateAfterProposal: rng };
+      }
+
+      function applyMove(layout, move) {
+        const next = [...layout];
+        if (move.type === "nudge" && next.length > 0) next[move.index] += move.delta;
+        if (move.type === "swap" && next.length > 1) [next[move.a], next[move.b]] = [next[move.b], next[move.a]];
+        if (move.type === "reinsert" && next.length > 1) {
+          const [item] = next.splice(move.from, 1);
+          next.splice(Math.min(move.to, next.length), 0, item);
+        }
+        if (move.type === "blockShift" && next.length > 0 && move.shift !== 0) {
+          const start = Math.max(0, Math.min(move.start, next.length - 1));
+          const end = Math.max(start, Math.min(move.end, next.length - 1));
+          const block = next.splice(start, end - start + 1);
+          const insertion = Math.max(0, Math.min(start + move.shift, next.length));
+          next.splice(insertion, 0, ...block);
+        }
+        return next;
+      }
+
+      const dom = {
+        weights: document.getElementById("weights"),
+        stats: document.getElementById("stats"),
+        log: document.getElementById("log"),
+        layoutBars: document.getElementById("layoutBars"),
+        chart: document.getElementById("costChart"),
+      };
+
+      let state;
+      const history = [];
+
+      function uiConfig() {
+        const input = (id) => document.getElementById(id);
+        const weights = {};
+        for (const key of Object.keys(defaultWeights)) {
+          weights[key] = Number(input(`w_${key}`).value);
+        }
+        return {
+          seed: Number(input("seed").value),
+          initialTemperature: Number(input("initialTemperature").value),
+          coolingRate: Number(input("coolingRate").value),
+          minTemperature: Number(input("minTemperature").value),
+          maxNudgeStep: Number(input("maxNudgeStep").value),
+          runCount: Number(input("runCount").value),
+          weights,
+        };
+      }
+
+      function initState() {
+        const cfg = uiConfig();
+        const layout = createDefaultFixtureLayout();
+        const cost = computeCost(layout, cfg.weights);
+        state = {
+          iteration: 0,
+          temperature: cfg.initialTemperature,
+          layout,
+          cost,
+          rngState: { seed: sanitizeSeed(cfg.seed) },
+          coolingRate: cfg.coolingRate,
+          minTemperature: cfg.minTemperature,
+          maxNudgeStep: cfg.maxNudgeStep,
+          weights: cfg.weights,
+        };
+        history.length = 0;
+        history.push({ iter: 0, total: cost.total, ...cost });
+        log(`initialized seed=${cfg.seed} total=${cost.total.toFixed(2)}`, true);
+        render();
+      }
+
+      function log(line, ok = true) {
+        const div = document.createElement("div");
+        div.className = `log-line ${ok ? "ok" : "bad"}`;
+        div.textContent = line;
+        dom.log.prepend(div);
+      }
+
+      function stepOnce() {
+        if (!state) return;
+        const move = proposeMove(state);
+        const candidateLayout = applyMove(state.layout, move);
+        const candidateCost = computeCost(candidateLayout, state.weights);
+        const delta = candidateCost.total - state.cost.total;
+
+        let accepted = false;
+        let reason = "rejected";
+        let rngAfterAccept = move.rngStateAfterProposal;
+
+        if (delta < 0) { accepted = true; reason = "improved"; }
+        else if (delta === 0) { accepted = true; reason = "equal"; }
+        else {
+          const [u, nextState] = nextRng(move.rngStateAfterProposal);
+          rngAfterAccept = nextState;
+          const metropolis = Math.exp(-delta / Math.max(state.temperature, 1e-12));
+          if (u < metropolis) { accepted = true; reason = "metropolis"; }
+        }
+
+        if (accepted) {
+          state.layout = candidateLayout;
+          state.cost = candidateCost;
+        }
+
+        state.iteration += 1;
+        state.temperature = Math.max(state.minTemperature, state.temperature * state.coolingRate);
+        state.rngState = rngAfterAccept;
+        history.push({ iter: state.iteration, total: state.cost.total, accepted, delta, ...state.cost });
+
+        const detail = move.type === "nudge" ? `idx=${move.index} Δ=${move.delta}`
+          : move.type === "swap" ? `a=${move.a} b=${move.b}`
+          : move.type === "reinsert" ? `from=${move.from} to=${move.to}`
+          : `start=${move.start} end=${move.end} shift=${move.shift}`;
+
+        log(`iter=${state.iteration} temp=${state.temperature.toFixed(4)} move=${move.type}(${detail}) Δ=${delta.toFixed(2)} ${reason}`, accepted);
+        render();
+      }
+
+      function renderStats() {
+        const c = state.cost;
+        dom.stats.innerHTML = "";
+        const fields = [
+          ["Iteration", state.iteration], ["Temp", state.temperature.toFixed(4)], ["Total", c.total.toFixed(2)], ["Layout size", state.layout.length],
+          ["L", c.L.toFixed(2)], ["X", c.X.toFixed(2)], ["B", c.B.toFixed(2)], ["F", c.F.toFixed(2)], ["S", c.S.toFixed(2)]
+        ];
+        for (const [k,v] of fields) {
+          const card = document.createElement("div"); card.className = "card";
+          card.innerHTML = `<div class="meta">${k}</div><div class="mono">${v}</div>`;
+          dom.stats.appendChild(card);
+        }
+      }
+
+      function renderBars() {
+        dom.layoutBars.innerHTML = "";
+        const min = Math.min(...state.layout);
+        for (let i = 0; i < state.layout.length; i += 1) {
+          const value = state.layout[i];
+          const h = (value - min + 1) * 10;
+          const bar = document.createElement("div");
+          bar.className = "bar";
+          bar.innerHTML = `<div style="height:${h}px"></div><span>${i}</span><span class="mono">${value}</span>`;
+          dom.layoutBars.appendChild(bar);
+        }
+      }
+
+      function renderChart() {
+        const canvas = dom.chart;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const left = 44, right = 8, top = 12, bottom = 24;
+        const w = canvas.width - left - right;
+        const h = canvas.height - top - bottom;
+        const values = history.map((h) => h.total);
+        const max = Math.max(...values, 1);
+        const min = Math.min(...values, 0);
+        const span = Math.max(1e-9, max - min);
+
+        ctx.strokeStyle = "#334155";
+        ctx.strokeRect(left, top, w, h);
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "12px monospace";
+        ctx.fillText(`max ${max.toFixed(2)}`, 4, 16);
+        ctx.fillText(`min ${min.toFixed(2)}`, 4, canvas.height - 8);
+
+        ctx.beginPath();
+        history.forEach((point, i) => {
+          const x = left + (i / Math.max(1, history.length - 1)) * w;
+          const y = top + (1 - (point.total - min) / span) * h;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = "#38bdf8";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      function render() {
+        if (!state) return;
+        renderStats();
+        renderBars();
+        renderChart();
+      }
+
+      function buildWeightControls() {
+        dom.weights.innerHTML = "";
+        for (const [key, value] of Object.entries(defaultWeights)) {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.innerHTML = `
+            <label>${key}</label>
+            <input id="w_${key}" type="range" min="0" max="5" step="0.1" value="${value}" />
+            <input id="w_${key}_num" type="number" min="0" max="5" step="0.1" value="${value}" style="width:72px" />
+          `;
+          dom.weights.appendChild(row);
+
+          const range = row.querySelector(`#w_${key}`);
+          const number = row.querySelector(`#w_${key}_num`);
+          range.addEventListener("input", () => { number.value = range.value; if (state) updateWeightsFromUI(); });
+          number.addEventListener("input", () => { range.value = number.value; if (state) updateWeightsFromUI(); });
+        }
+      }
+
+      function updateWeightsFromUI() {
+        const cfg = uiConfig();
+        state.weights = cfg.weights;
+        state.cost = computeCost(state.layout, state.weights);
+        history.push({ iter: state.iteration, total: state.cost.total, accepted: true, delta: 0, ...state.cost });
+        log(`updated weights => total=${state.cost.total.toFixed(2)}`, true);
+        render();
+      }
+
+      document.getElementById("init").addEventListener("click", initState);
+      document.getElementById("step").addEventListener("click", stepOnce);
+      document.getElementById("run").addEventListener("click", () => {
+        const { runCount } = uiConfig();
+        for (let i = 0; i < Math.max(0, runCount); i += 1) stepOnce();
+      });
+      document.getElementById("resetWeights").addEventListener("click", () => {
+        for (const [key, value] of Object.entries(defaultWeights)) {
+          document.getElementById(`w_${key}`).value = String(value);
+          document.getElementById(`w_${key}_num`).value = String(value);
+        }
+        if (state) updateWeightsFromUI();
+      });
+
+      buildWeightControls();
+      initState();
+    </script>
+  </body>
+</html>
