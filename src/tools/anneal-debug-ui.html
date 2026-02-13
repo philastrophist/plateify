@@ -9,7 +9,7 @@
       body { margin: 0; background: #0f172a; color: #e2e8f0; }
       .app { display: grid; grid-template-columns: 360px 1fr; min-height: 100vh; }
       .panel { padding: 16px; border-right: 1px solid #334155; overflow: auto; }
-      .main { padding: 16px; display: grid; gap: 12px; grid-template-rows: auto auto 1fr auto; }
+      .main { padding: 16px; display: grid; gap: 12px; grid-template-rows: auto auto auto 1fr; }
       h1, h2, h3 { margin: 0 0 8px; }
       .section { margin-bottom: 16px; padding: 12px; border: 1px solid #334155; border-radius: 8px; background: #111827; }
       .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-bottom: 6px; }
@@ -22,9 +22,9 @@
       .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; }
       .card { background: #0b1220; border: 1px solid #334155; border-radius: 8px; padding: 8px; }
       canvas { width: 100%; height: 240px; background: #020617; border: 1px solid #334155; border-radius: 8px; }
-      #layoutBars { display: flex; gap: 4px; align-items: flex-end; min-height: 180px; padding: 8px; border: 1px solid #334155; border-radius: 8px; background: #020617; overflow-x: auto; }
-      .bar { min-width: 22px; display: flex; flex-direction: column; align-items: center; font-size: 10px; }
-      .bar > div { width: 100%; background: linear-gradient(180deg, #0ea5e9, #1d4ed8); border: 1px solid #60a5fa; border-radius: 4px 4px 0 0; }
+      #plateCanvas { height: 420px; background: #f4f4f4; border-color: #334155; }
+      .diagram-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .diagram-toolbar .meta { margin-left: auto; }
       .log { max-height: 220px; overflow: auto; border: 1px solid #334155; border-radius: 8px; background: #020617; padding: 8px; }
       .log-line { margin-bottom: 4px; }
       .ok { color: #22c55e; }
@@ -63,7 +63,14 @@
       <main class="main">
         <div class="stat-grid" id="stats"></div>
         <canvas id="costChart" width="960" height="260"></canvas>
-        <div id="layoutBars"></div>
+        <div class="diagram-toolbar">
+          <button id="acceptedPrev">← Accepted</button>
+          <button id="acceptedNext">Accepted →</button>
+          <input id="acceptedSlider" type="range" min="0" max="0" value="0" step="1" style="width: 240px" />
+          <span class="mono" id="acceptedLabel">accepted 1/1 · iter 0</span>
+          <span class="meta">Plate diagram updates each step; navigator follows accepted steps.</span>
+        </div>
+        <canvas id="plateCanvas" width="960" height="460"></canvas>
         <div class="log" id="log"></div>
       </main>
     </div>
@@ -84,7 +91,43 @@
           { id: 's_cpt', type: 'deterministic', dims: ['c','p','t'] }, { id: 'B_cpt', type: 'observed', dims: ['c','p','t'] },
           { id: 'V_ct', type: 'query', dims: ['c','t'] }, { id: 'T_c', type: 'auxiliary', dims: ['c'] }, { id: 'q_cpt', type: 'query', dims: ['c','p','t'] },
           { id: 'K_cp', type: 'auxiliary', dims: ['c','p'] }, { id: 'A_cp', type: 'deterministic', dims: ['c','p'] }
-        ]
+        ],
+        edges: [
+          { sourceTemplateId: 'alpha', targetTemplateId: 'r_cp' },
+          { sourceTemplateId: 'beta', targetTemplateId: 'r_cp' },
+          { sourceTemplateId: 'gamma', targetTemplateId: 'l_cp' },
+          { sourceTemplateId: 'delta', targetTemplateId: 'l_cp' },
+          { sourceTemplateId: 'r_c', targetTemplateId: 'r_cp' },
+          { sourceTemplateId: 'r_p', targetTemplateId: 'r_cp' },
+          { sourceTemplateId: 'l_c', targetTemplateId: 'l_cp' },
+          { sourceTemplateId: 'l_p', targetTemplateId: 'l_cp' },
+          { sourceTemplateId: 'r_cp', targetTemplateId: 's_cpt' },
+          { sourceTemplateId: 's_cpt', targetTemplateId: 'B_cpt' },
+          { sourceTemplateId: 'l_cp', targetTemplateId: 'B_cpt' },
+          { sourceTemplateId: 'B_cpt', targetTemplateId: 'V_ct' },
+          { sourceTemplateId: 'T_c', targetTemplateId: 'V_ct' },
+          { sourceTemplateId: 'V_ct', targetTemplateId: 'q_cpt' },
+          { sourceTemplateId: 'B_cpt', targetTemplateId: 'q_cpt' },
+          { sourceTemplateId: 's_cpt', targetTemplateId: 'q_cpt' },
+          { sourceTemplateId: 'K_cp', targetTemplateId: 'B_cpt' },
+          { sourceTemplateId: 'K_cp', targetTemplateId: 'A_cp' },
+        ],
+      };
+
+      const nodeAnchor = {
+        alpha: [0.08, 0.18], beta: [0.08, 0.62], gamma: [0.15, 0.32], delta: [0.15, 0.82],
+        r_c: [0.38, 0.16], r_p: [0.38, 0.28], l_c: [0.38, 0.72], l_p: [0.38, 0.84], T_c: [0.3, 0.54],
+        r_cp: [0.58, 0.2], l_cp: [0.58, 0.79], K_cp: [0.52, 0.48], A_cp: [0.7, 0.52],
+        s_cpt: [0.8, 0.34], B_cpt: [0.8, 0.52], V_ct: [0.93, 0.52], q_cpt: [0.92, 0.74],
+      };
+
+      const nodeStyleByType = {
+        source: { fill: "#fdfdfd", stroke: "#000000" },
+        latent: { fill: "#ececec", stroke: "#000000" },
+        deterministic: { fill: "#f9f9f9", stroke: "#000000" },
+        observed: { fill: "#b8b8b8", stroke: "#000000" },
+        query: { fill: "#d7d7d7", stroke: "#000000" },
+        auxiliary: { fill: "#efefef", stroke: "#000000" },
       };
 
       function createDefaultFixtureLayout() {
@@ -205,12 +248,18 @@
         weights: document.getElementById("weights"),
         stats: document.getElementById("stats"),
         log: document.getElementById("log"),
-        layoutBars: document.getElementById("layoutBars"),
         chart: document.getElementById("costChart"),
+        plate: document.getElementById("plateCanvas"),
+        acceptedPrev: document.getElementById("acceptedPrev"),
+        acceptedNext: document.getElementById("acceptedNext"),
+        acceptedSlider: document.getElementById("acceptedSlider"),
+        acceptedLabel: document.getElementById("acceptedLabel"),
       };
 
       let state;
       const history = [];
+      const acceptedSnapshots = [];
+      let acceptedCursor = 0;
 
       function uiConfig() {
         const input = (id) => document.getElementById(id);
@@ -229,6 +278,16 @@
         };
       }
 
+      function recordAcceptedSnapshot(reason = "accepted") {
+        acceptedSnapshots.push({
+          iter: state.iteration,
+          layout: [...state.layout],
+          cost: { ...state.cost },
+          reason,
+        });
+        acceptedCursor = acceptedSnapshots.length - 1;
+      }
+
       function initState() {
         const cfg = uiConfig();
         const layout = createDefaultFixtureLayout();
@@ -245,7 +304,9 @@
           weights: cfg.weights,
         };
         history.length = 0;
-        history.push({ iter: 0, total: cost.total, ...cost });
+        acceptedSnapshots.length = 0;
+        history.push({ iter: 0, total: cost.total, accepted: true, delta: 0, ...cost });
+        recordAcceptedSnapshot("init");
         log(`initialized seed=${cfg.seed} total=${cost.total.toFixed(2)}`, true);
         render();
       }
@@ -257,7 +318,7 @@
         dom.log.prepend(div);
       }
 
-      function stepOnce() {
+      function stepOnce({ renderNow = true } = {}) {
         if (!state) return;
         const move = proposeMove(state);
         const candidateLayout = applyMove(state.layout, move);
@@ -280,6 +341,7 @@
         if (accepted) {
           state.layout = candidateLayout;
           state.cost = candidateCost;
+          recordAcceptedSnapshot(reason);
         }
 
         state.iteration += 1;
@@ -293,14 +355,16 @@
           : `start=${move.start} end=${move.end} shift=${move.shift}`;
 
         log(`iter=${state.iteration} temp=${state.temperature.toFixed(4)} move=${move.type}(${detail}) Δ=${delta.toFixed(2)} ${reason}`, accepted);
-        render();
+        if (renderNow) render();
       }
 
       function renderStats() {
         const c = state.cost;
         dom.stats.innerHTML = "";
+        const selected = acceptedSnapshots[acceptedCursor] ?? acceptedSnapshots[acceptedSnapshots.length - 1];
         const fields = [
           ["Iteration", state.iteration], ["Temp", state.temperature.toFixed(4)], ["Total", c.total.toFixed(2)], ["Layout size", state.layout.length],
+          ["Accepted step", `${acceptedCursor + 1}/${Math.max(acceptedSnapshots.length, 1)}`], ["Accepted iter", selected?.iter ?? 0],
           ["L", c.L.toFixed(2)], ["X", c.X.toFixed(2)], ["B", c.B.toFixed(2)], ["F", c.F.toFixed(2)], ["S", c.S.toFixed(2)]
         ];
         for (const [k,v] of fields) {
@@ -310,17 +374,121 @@
         }
       }
 
-      function renderBars() {
-        dom.layoutBars.innerHTML = "";
-        const min = Math.min(...state.layout);
-        for (let i = 0; i < state.layout.length; i += 1) {
-          const value = state.layout[i];
-          const h = (value - min + 1) * 10;
-          const bar = document.createElement("div");
-          bar.className = "bar";
-          bar.innerHTML = `<div style="height:${h}px"></div><span>${i}</span><span class="mono">${value}</span>`;
-          dom.layoutBars.appendChild(bar);
+      function drawArrow(ctx, from, to) {
+        const head = 9;
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = Math.max(1, Math.hypot(dx, dy));
+        const ux = dx / len;
+        const uy = dy / len;
+
+        const startX = from.x + ux * from.r;
+        const startY = from.y + uy * from.r;
+        const endX = to.x - ux * to.r;
+        const endY = to.y - uy * to.r;
+
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(endX, endY);
+        ctx.lineTo(endX - ux * head - uy * (head * 0.5), endY - uy * head + ux * (head * 0.5));
+        ctx.lineTo(endX - ux * head + uy * (head * 0.5), endY - uy * head - ux * (head * 0.5));
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function renderAcceptedControls() {
+        dom.acceptedSlider.max = String(Math.max(0, acceptedSnapshots.length - 1));
+        dom.acceptedSlider.value = String(Math.max(0, acceptedCursor));
+
+        dom.acceptedPrev.disabled = acceptedCursor <= 0;
+        dom.acceptedNext.disabled = acceptedCursor >= acceptedSnapshots.length - 1;
+
+        const selected = acceptedSnapshots[acceptedCursor] ?? { iter: 0 };
+        dom.acceptedLabel.textContent = `accepted ${acceptedCursor + 1}/${Math.max(acceptedSnapshots.length, 1)} · iter ${selected.iter}`;
+      }
+
+      function renderPlateDiagram() {
+        const canvas = dom.plate;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const selected = acceptedSnapshots[acceptedCursor] ?? { layout: createDefaultFixtureLayout(), iter: 0 };
+        const viewLayout = selected.layout;
+
+        ctx.fillStyle = "#f4f4f4";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const plateRoot = { x: 210, y: 42, w: canvas.width - 260, h: canvas.height - 84 };
+        const plateCP = { x: plateRoot.x + 26, y: plateRoot.y + 28, w: plateRoot.w - 52, h: plateRoot.h - 56 };
+        const plateCPT = { x: plateCP.x + 26, y: plateCP.y + 28, w: plateCP.w - 52, h: plateCP.h - 56 };
+
+        ctx.strokeStyle = "#000";
+        ctx.fillStyle = "rgba(185, 185, 185, 0.2)";
+        ctx.lineWidth = 2;
+        ctx.fillRect(plateRoot.x, plateRoot.y, plateRoot.w, plateRoot.h);
+        ctx.strokeRect(plateRoot.x, plateRoot.y, plateRoot.w, plateRoot.h);
+        ctx.fillStyle = "#111";
+        ctx.font = "28px serif";
+        ctx.fillText(`conditions c=${defaultFixture.cardinalities.c}`, plateRoot.x + 12, plateRoot.y + plateRoot.h - 12);
+
+        ctx.fillStyle = "rgba(170, 170, 170, 0.17)";
+        ctx.fillRect(plateCP.x, plateCP.y, plateCP.w, plateCP.h);
+        ctx.strokeRect(plateCP.x, plateCP.y, plateCP.w, plateCP.h);
+        ctx.fillStyle = "#111";
+        ctx.fillText(`participants p=${defaultFixture.cardinalities.p}`, plateCP.x + 12, plateCP.y + plateCP.h - 12);
+
+        ctx.fillStyle = "rgba(155, 155, 155, 0.14)";
+        ctx.fillRect(plateCPT.x, plateCPT.y, plateCPT.w, plateCPT.h);
+        ctx.strokeRect(plateCPT.x, plateCPT.y, plateCPT.w, plateCPT.h);
+        ctx.fillStyle = "#111";
+        ctx.fillText(`time t=${defaultFixture.cardinalities.t}`, plateCPT.x + 12, plateCPT.y + plateCPT.h - 12);
+
+        const nodePos = new Map();
+        const layoutMean = viewLayout.reduce((a, b) => a + b, 0) / Math.max(1, viewLayout.length);
+
+        defaultFixture.nodes.forEach((node, idx) => {
+          const [nx, ny] = nodeAnchor[node.id] ?? [0.5, 0.5];
+          const typeRadius = node.type === "observed" ? 28 : node.type === "latent" ? 24 : 21;
+          const value = viewLayout[idx] ?? 0;
+          const yJitter = (value - layoutMean) * 3;
+          const x = 24 + nx * (canvas.width - 48);
+          const y = 24 + ny * (canvas.height - 48) + yJitter;
+          nodePos.set(node.id, { x, y, r: typeRadius, node });
+        });
+
+        ctx.strokeStyle = "#000";
+        ctx.fillStyle = "#000";
+        ctx.lineWidth = 2;
+        for (const edge of defaultFixture.edges) {
+          const from = nodePos.get(edge.sourceTemplateId);
+          const to = nodePos.get(edge.targetTemplateId);
+          if (!from || !to) continue;
+          drawArrow(ctx, from, to);
         }
+
+        for (const { x, y, r, node } of nodePos.values()) {
+          const style = nodeStyleByType[node.type] ?? nodeStyleByType.latent;
+          ctx.fillStyle = style.fill;
+          ctx.strokeStyle = style.stroke;
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = "#111";
+          ctx.font = "italic 32px serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const label = node.id.replace(/_(cpt|cp|ct|c|p|t)$/i, "");
+          ctx.fillText(label, x, y);
+        }
+
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
       }
 
       function renderChart() {
@@ -352,13 +520,26 @@
         ctx.strokeStyle = "#38bdf8";
         ctx.lineWidth = 2;
         ctx.stroke();
+
+        const selectedIter = acceptedSnapshots[acceptedCursor]?.iter ?? 0;
+        const selectedIndex = history.findIndex((entry) => entry.iter === selectedIter);
+        if (selectedIndex >= 0) {
+          const x = left + (selectedIndex / Math.max(1, history.length - 1)) * w;
+          ctx.strokeStyle = "#f59e0b";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, top + h);
+          ctx.stroke();
+        }
       }
 
       function render() {
         if (!state) return;
+        renderAcceptedControls();
         renderStats();
-        renderBars();
         renderChart();
+        renderPlateDiagram();
       }
 
       function buildWeightControls() {
@@ -385,16 +566,35 @@
         state.weights = cfg.weights;
         state.cost = computeCost(state.layout, state.weights);
         history.push({ iter: state.iteration, total: state.cost.total, accepted: true, delta: 0, ...state.cost });
+        recordAcceptedSnapshot("weights");
         log(`updated weights => total=${state.cost.total.toFixed(2)}`, true);
         render();
       }
 
+      dom.acceptedPrev.addEventListener("click", () => {
+        acceptedCursor = Math.max(0, acceptedCursor - 1);
+        render();
+      });
+
+      dom.acceptedNext.addEventListener("click", () => {
+        acceptedCursor = Math.min(acceptedSnapshots.length - 1, acceptedCursor + 1);
+        render();
+      });
+
+      dom.acceptedSlider.addEventListener("input", () => {
+        acceptedCursor = Number(dom.acceptedSlider.value);
+        render();
+      });
+
       document.getElementById("init").addEventListener("click", initState);
-      document.getElementById("step").addEventListener("click", stepOnce);
+      document.getElementById("step").addEventListener("click", () => stepOnce({ renderNow: true }));
       document.getElementById("run").addEventListener("click", () => {
         const { runCount } = uiConfig();
-        for (let i = 0; i < Math.max(0, runCount); i += 1) stepOnce();
+        const count = Math.max(0, runCount);
+        for (let i = 0; i < count; i += 1) stepOnce({ renderNow: false });
+        render();
       });
+
       document.getElementById("resetWeights").addEventListener("click", () => {
         for (const [key, value] of Object.entries(defaultWeights)) {
           document.getElementById(`w_${key}`).value = String(value);
