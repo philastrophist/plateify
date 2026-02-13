@@ -260,6 +260,15 @@
       const history = [];
       const acceptedSnapshots = [];
       let acceptedCursor = 0;
+      let bestTotal = Number.POSITIVE_INFINITY;
+
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function finiteNumber(value, fallback) {
+        return Number.isFinite(value) ? value : fallback;
+      }
 
       function uiConfig() {
         const input = (id) => document.getElementById(id);
@@ -267,13 +276,25 @@
         for (const key of Object.keys(defaultWeights)) {
           weights[key] = Number(input(`w_${key}`).value);
         }
+
+        const seed = Number.parseInt(input("seed").value, 10);
+        const initialTemperatureRaw = Number(input("initialTemperature").value);
+        const coolingRateRaw = Number(input("coolingRate").value);
+        const minTemperatureRaw = Number(input("minTemperature").value);
+        const maxNudgeStepRaw = Number.parseInt(input("maxNudgeStep").value, 10);
+        const runCountRaw = Number.parseInt(input("runCount").value, 10);
+
+        const initialTemperature = clamp(finiteNumber(initialTemperatureRaw, 12), 0.001, 1_000_000);
+        const coolingRate = clamp(finiteNumber(coolingRateRaw, 0.992), 0.0001, 0.9999);
+        const minTemperature = clamp(finiteNumber(minTemperatureRaw, 0.0001), 0.0001, initialTemperature);
+
         return {
-          seed: Number(input("seed").value),
-          initialTemperature: Number(input("initialTemperature").value),
-          coolingRate: Number(input("coolingRate").value),
-          minTemperature: Number(input("minTemperature").value),
-          maxNudgeStep: Number(input("maxNudgeStep").value),
-          runCount: Number(input("runCount").value),
+          seed: Number.isFinite(seed) ? seed : 1337,
+          initialTemperature,
+          coolingRate,
+          minTemperature,
+          maxNudgeStep: clamp(Number.isFinite(maxNudgeStepRaw) ? maxNudgeStepRaw : 2, 1, 100),
+          runCount: clamp(Number.isFinite(runCountRaw) ? runCountRaw : 25, 0, 20000),
           weights,
         };
       }
@@ -305,7 +326,8 @@
         };
         history.length = 0;
         acceptedSnapshots.length = 0;
-        history.push({ iter: 0, total: cost.total, accepted: true, delta: 0, ...cost });
+        bestTotal = cost.total;
+        history.push({ iter: 0, total: cost.total, bestTotal, accepted: true, delta: 0, ...cost });
         recordAcceptedSnapshot("init");
         log(`initialized seed=${cfg.seed} total=${cost.total.toFixed(2)}`, true);
         render();
@@ -345,9 +367,11 @@
         }
 
         state.iteration += 1;
-        state.temperature = Math.max(state.minTemperature, state.temperature * state.coolingRate);
+        const cooled = state.temperature * state.coolingRate;
+        state.temperature = Math.max(state.minTemperature, finiteNumber(cooled, state.minTemperature));
         state.rngState = rngAfterAccept;
-        history.push({ iter: state.iteration, total: state.cost.total, accepted, delta, ...state.cost });
+        bestTotal = Math.min(bestTotal, state.cost.total);
+        history.push({ iter: state.iteration, total: state.cost.total, bestTotal, accepted, delta, ...state.cost });
 
         const detail = move.type === "nudge" ? `idx=${move.index} Δ=${move.delta}`
           : move.type === "swap" ? `a=${move.a} b=${move.b}`
@@ -499,7 +523,9 @@
         const left = 44, right = 8, top = 12, bottom = 24;
         const w = canvas.width - left - right;
         const h = canvas.height - top - bottom;
-        const values = history.map((h) => h.total);
+        const currentValues = history.map((h) => h.total);
+        const bestValues = history.map((h) => h.bestTotal ?? h.total);
+        const values = bestValues;
         const max = Math.max(...values, 1);
         const min = Math.min(...values, 0);
         const span = Math.max(1e-9, max - min);
@@ -510,11 +536,22 @@
         ctx.font = "12px monospace";
         ctx.fillText(`max ${max.toFixed(2)}`, 4, 16);
         ctx.fillText(`min ${min.toFixed(2)}`, 4, canvas.height - 8);
+        ctx.fillText("gray=current, cyan=best", left + 8, top + 14);
 
         ctx.beginPath();
         history.forEach((point, i) => {
           const x = left + (i / Math.max(1, history.length - 1)) * w;
-          const y = top + (1 - (point.total - min) / span) * h;
+          const y = top + (1 - ((point.total ?? 0) - min) / span) * h;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = "#475569";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.beginPath();
+        history.forEach((point, i) => {
+          const x = left + (i / Math.max(1, history.length - 1)) * w;
+          const y = top + (1 - ((point.bestTotal ?? point.total ?? 0) - min) / span) * h;
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         });
         ctx.strokeStyle = "#38bdf8";
@@ -565,7 +602,8 @@
         const cfg = uiConfig();
         state.weights = cfg.weights;
         state.cost = computeCost(state.layout, state.weights);
-        history.push({ iter: state.iteration, total: state.cost.total, accepted: true, delta: 0, ...state.cost });
+        bestTotal = state.cost.total;
+        history.push({ iter: state.iteration, total: state.cost.total, bestTotal, accepted: true, delta: 0, ...state.cost });
         recordAcceptedSnapshot("weights");
         log(`updated weights => total=${state.cost.total.toFixed(2)}`, true);
         render();
