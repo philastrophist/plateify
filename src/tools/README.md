@@ -7,4 +7,5 @@ Open `src/tools/anneal-debug-ui.html` in a browser (or serve the repo root with 
 - Initialize with the default Bayesian plate fixture graph from the spec.
 - Step one move at a time or run multiple steps.
 - Inspect move acceptance/rejection logs and total cost over time.
+- View an updated Bayesian plate diagram with semantic shading; scrub backward/forward across accepted steps.
 - Tune all cost-function weights (`L`, `X`, `B`, `F_out`, `F_down`, `F`, `S_span`, `S_waste`, `S`) via sliders.
